@@ -64,6 +64,7 @@ def create_proxy_extension(proxy: dict) -> str:
             "tabs",
             "unlimitedStorage",
             "storage",
+            "downloads",
             "<all_urls>",
             "webRequest",
             "webRequestBlocking"
@@ -120,6 +121,58 @@ def create_proxy_extension(proxy: dict) -> str:
 
     return proxy_extension_dir
 
+def create_shadow_root_extension() -> str:
+    manifest_json = """
+    {
+        "version": "1.0.0",
+        "manifest_version": 2,
+        "name": "Chrome Shadow Root",
+        "permissions": [
+            "proxy",
+            "tabs",
+            "iframe",
+            "unlimitedStorage",
+            "storage",
+            "downloads",
+            "<all_urls>"
+        ],
+        "minimum_chrome_version": "76.0.0",
+        "content_scripts": [{
+            "matches": ["<all_urls>"],
+            "run_at": "document_start",
+            "all_frames": true,
+            "js": ["attachShadow.js"]
+        }],
+        "web_accessible_resources": ["injected.js"]
+    }
+    """
+
+    attach_shadow_js = """
+    const injectedScript = document.createElement('script');
+    injectedScript.src = chrome.extension.getURL('injected.js');
+    (document.head || document.documentElement).appendChild(injectedScript);
+    """
+
+    injected_js = """
+    Element.prototype._attachShadow = Element.prototype.attachShadow;
+    Element.prototype.attachShadow = function () {
+        return this._attachShadow( { mode: "open" } );
+    };
+    """
+
+    extension_dir = tempfile.mkdtemp()
+
+    with open(os.path.join(extension_dir, "manifest.json"), "w") as f:
+        f.write(manifest_json)
+
+    with open(os.path.join(extension_dir, "attachShadow.js"), "w") as f:
+        f.write(attach_shadow_js)
+
+    with open(os.path.join(extension_dir, "injected.js"), "w") as f:
+        f.write(injected_js)
+
+    return extension_dir
+
 
 def get_webdriver(proxy: dict = None) -> WebDriver:
     global PATCHED_DRIVER_PATH, USER_AGENT
@@ -153,6 +206,11 @@ def get_webdriver(proxy: dict = None) -> WebDriver:
     if USER_AGENT is not None:
         options.add_argument('--user-agent=%s' % USER_AGENT)
 
+    # Shadow root extension
+    shadow_root_extension_dir = create_shadow_root_extension()
+    options.add_argument("--load-extension=%s" % os.path.abspath(shadow_root_extension_dir))
+
+    # Proxy extension
     proxy_extension_dir = None
     if proxy and all(key in proxy for key in ['url', 'username', 'password']):
         proxy_extension_dir = create_proxy_extension(proxy)
@@ -215,6 +273,7 @@ def get_webdriver(proxy: dict = None) -> WebDriver:
     # options.add_argument('--disable-setuid-sandbox')
     # options.add_argument('--disable-dev-shm-usage')
     # driver = webdriver.Chrome(options=options)
+
 
     return driver
 

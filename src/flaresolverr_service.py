@@ -6,6 +6,8 @@ from datetime import timedelta
 from html import escape
 from urllib.parse import unquote, quote
 
+from selenium.webdriver import ActionChains
+
 from func_timeout import FunctionTimedOut, func_timeout
 from selenium.common import TimeoutException
 from selenium.webdriver.chrome.webdriver import WebDriver
@@ -251,10 +253,60 @@ def _resolve_challenge(req: V1RequestBase, method: str) -> ChallengeResolutionT:
             driver.quit()
             logging.debug('A used instance of webdriver has been destroyed')
 
-
-def click_verify(driver: WebDriver):
+def try_shadow_checkbox(driver: WebDriver):
     try:
-        logging.debug("Try to find the Cloudflare verify checkbox...")
+        logging.debug("|-------------------------------------")
+        logging.debug("| [Shadow checkbox] Try to find the Cloudflare verify checkbox in the shadow roots and iframe...")
+
+        try:
+            shadow_host = driver.find_element(By.CSS_SELECTOR, "#fCAWs6 > div > div > div")
+        except Exception:
+            shadow_host = None
+
+        if not shadow_host:
+            logging.debug("Shadow host not found.")
+            return
+
+        try:
+            iframe = driver.execute_script("return arguments[0].shadowRoot.querySelector('iframe')", shadow_host)
+        except Exception:
+            iframe = None
+        if not iframe:
+            logging.debug("Cloudflare iframe not found.")
+            return
+
+        driver.switch_to.frame(iframe)
+
+        iframe_body = driver.find_element(By.TAG_NAME, "body")
+       
+        iframe_shadow_host = iframe_body
+        if not iframe_shadow_host:
+            logging.debug("Cloudflare iframe shadow host not found.")
+
+        checkbox = driver.execute_script('return arguments[0].shadowRoot.querySelector("input")', iframe_shadow_host)
+        if checkbox:
+            logging.debug("Cloudflare verify checkbox found!!!.")
+            actions = ActionChains(driver)
+            actions.move_to_element_with_offset(checkbox, 5, 7)
+            actions.click(checkbox)
+            actions.perform()
+            logging.debug("Cloudflare verify checkbox found and clicked!")
+            return True
+    except Exception:
+        logging.debug("Cloudflare verify checkbox not found on the page.")
+        return False
+    finally:
+        driver.switch_to.default_content()
+        return False
+
+def try_simple_checkbox(driver: WebDriver):
+
+    is_success = False
+
+    try:
+        logging.debug("|-------------------------------------")
+        logging.debug("| [Simple checkbox] Try to find the Cloudflare verify checkbox directly in the page...")
+
         iframe = driver.find_element(By.XPATH, "//iframe[starts-with(@id, 'cf-chl-widget-')]")
         driver.switch_to.frame(iframe)
         checkbox = driver.find_element(
@@ -267,25 +319,53 @@ def click_verify(driver: WebDriver):
             actions.click(checkbox)
             actions.perform()
             logging.debug("Cloudflare verify checkbox found and clicked!")
+            is_success = True
     except Exception:
         logging.debug("Cloudflare verify checkbox not found on the page.")
     finally:
         driver.switch_to.default_content()
+        return is_success
+
+def try_simple_button(driver: WebDriver):
+
+    is_success = False
 
     try:
-        logging.debug("Try to find the Cloudflare 'Verify you are human' button...")
+        logging.debug("|-------------------------------------")
+        logging.debug("| [Simple button] Try to find the Cloudflare verify button directly in the page...")
+
         button = driver.find_element(
             by=By.XPATH,
             value="//input[@type='button' and @value='Verify you are human']",
         )
-        if button:
+        if not button:
+            loggins.debug("Button not found. Try to find the Cloudflare 'chekbox'...")
+            button = driver.find_element(
+                by=By.XPATH,
+                value="//input[@type='checkbox']",
+            )
+        else:
             actions = ActionChains(driver)
             actions.move_to_element_with_offset(button, 5, 7)
             actions.click(button)
             actions.perform()
             logging.debug("The Cloudflare 'Verify you are human' button found and clicked!")
+            is_success = True
     except Exception:
         logging.debug("The Cloudflare 'Verify you are human' button not found on the page.")
+    finally:
+        return is_success
+
+def click_verify(driver: WebDriver):
+
+    if try_simple_checkbox(driver):
+        return
+
+    if try_shadow_checkbox(driver):
+        return
+
+    if try_simple_button(driver):
+        return
 
     time.sleep(2)
 
@@ -301,6 +381,7 @@ def get_correct_window(driver: WebDriver) -> WebDriver:
 
 
 def access_page(driver: WebDriver, url: str) -> None:
+    # driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {'includeCommandLineAPI': True, 'runImmediately': True, 'source': 'Element.prototype._attachShadow = Element.prototype.attachShadow; Element.prototype.attachShadow = function () { return this._attachShadow( { mode: "open" } ); };'})
     driver.get(url)
     driver.start_session()
     driver.start_session()  # required to bypass Cloudflare
@@ -318,7 +399,7 @@ def _evil_logic(req: V1RequestBase, driver: WebDriver, method: str) -> Challenge
         _post_request(req, driver)
     else:
         access_page(driver, req.url)
-    driver = get_correct_window(driver)
+    driver = get_correct_window(driver)    
 
     # set cookies if required
     if req.cookies is not None and len(req.cookies) > 0:
@@ -388,7 +469,6 @@ def _evil_logic(req: V1RequestBase, driver: WebDriver, method: str) -> Challenge
 
             except TimeoutException:
                 logging.debug("Timeout waiting for selector")
-
                 click_verify(driver)
 
                 # update the html (cloudflare reloads the page every 5 s)
